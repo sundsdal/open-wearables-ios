@@ -113,6 +113,21 @@ Your host app needs these in `Info.plist`:
 
 And HealthKit must be enabled in Signing & Capabilities.
 
+## Roadmap
+
+This package is a direct extraction of the Flutter SDK's iOS layer. The following steps turn it into a properly structured, testable shared library.
+
+1. **Extract dependency seams** — Put protocols/closures in front of `HKHealthStore`, `URLSession`, `UIApplication`, and clock so the engine becomes testable.
+2. **Codable payload models** — Replace all `[String: Any]` serialization with typed structs (`SyncPayload`, `HealthRecord`, `WorkoutRecord`, `SourceInfo`).
+3. **Typed error model** — Define `OWHError` enum and propagate through all public APIs, replacing `Bool` callbacks and silent `try?` paths.
+4. **Core sync tests** — Cover initial sync, incremental sync, anchor advancement, resume after interruption, outbox retry, token refresh failure, and non-2xx handling.
+5. **Break up OWHSyncEngine** — Extract `OWHAuthManager`, `OWHNetworkClient`, `OWHSyncOrchestrator`, `OWHSyncStateStore`, and make the serializer a pure mapper.
+6. **Centralize state persistence** — Unify anchors, sync progress, and outbox metadata behind one store API with transactional behavior.
+7. **Structured consumer events** — Expose sync progress, pause reasons, retry status, and terminal failures to RN/Flutter bridge callers.
+8. **Migrate to async/await** — Replace callback chains with structured concurrency; adopt actor isolation for mutable sync state.
+9. **Split into SPM targets** — Separate `OpenWearablesCore` (auth, networking, storage) from `OpenWearablesHealthKit` (queries, sync, serialization).
+10. **Architecture doc** — Short document covering module boundaries, sync state machine, and data flow for onboarding contributors.
+
 ## License
 
 MIT
