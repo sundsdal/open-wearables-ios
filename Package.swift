@@ -12,6 +12,11 @@ let package = Package(
             name: "OpenWearablesHealthCore",
             dependencies: [],
             path: "Sources/OpenWearablesHealthCore"
+        ),
+        .testTarget(
+            name: "OpenWearablesHealthCoreTests",
+            dependencies: ["OpenWearablesHealthCore"],
+            path: "Tests/OpenWearablesHealthCoreTests"
         )
     ]
 )

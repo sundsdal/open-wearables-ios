@@ -13,12 +13,12 @@ extension OWHSyncEngine {
     }
 
     internal func outboxDir() -> URL {
-        let base = try? FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
-        return (base ?? FileManager.default.temporaryDirectory).appendingPathComponent("health_outbox", isDirectory: true)
+        let base = try? fileManagerProvider.applicationSupportURL()
+        return (base ?? fileManagerProvider.temporaryDirectory).appendingPathComponent("health_outbox", isDirectory: true)
     }
 
     internal func ensureOutboxDir() {
-        try? FileManager.default.createDirectory(at: outboxDir(), withIntermediateDirectories: true)
+        try? fileManagerProvider.createDirectory(at: outboxDir(), withIntermediateDirectories: true)
     }
 
     internal func newPath(_ name: String, ext: String) -> URL {
@@ -73,7 +73,7 @@ extension OWHSyncEngine {
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.setValue(token, forHTTPHeaderField: "Authorization")
 
-        let task = session.uploadTask(with: req, fromFile: payloadURL)
+        let task = networkSession.backgroundUploadTask(with: req, fromFile: payloadURL)
         task.taskDescription = [itemURL.path, payloadURL.path, anchorURL?.path ?? ""].joined(separator: "|")
         task.resume()
 
@@ -153,7 +153,7 @@ extension OWHSyncEngine {
         self.logPayloadToConsole(payloadData, label: "UPLOAD")
         #endif
 
-        let task = foregroundSession.dataTask(with: req) { [weak self] data, response, error in
+        let task = networkSession.foregroundDataTask(with: req) { [weak self] data, response, error in
             guard let self = self else { return }
 
             if let error = error {
@@ -162,7 +162,7 @@ extension OWHSyncEngine {
                     self.logMessage("Upload error: \(error.localizedDescription)")
                     self.markNetworkError()
                 }
-                try? FileManager.default.removeItem(atPath: payloadURL.path)
+                try? fileManagerProvider.removeItem(atPath: payloadURL.path)
                 completion(false)
                 return
             }
@@ -173,7 +173,7 @@ extension OWHSyncEngine {
 
                     self.handleSuccessfulUpload(itemPath: itemURL.path, anchorPath: anchorsURL?.path, wasFullExport: wasFullExport)
 
-                    try? FileManager.default.removeItem(atPath: payloadURL.path)
+                    try? fileManagerProvider.removeItem(atPath: payloadURL.path)
                     completion(true)
                 } else {
                     var errorMsg = "HTTP \(httpResponse.statusCode)"
@@ -182,13 +182,13 @@ extension OWHSyncEngine {
                         errorMsg += " - \(truncated)"
                     }
                     self.logMessage(errorMsg)
-                    try? FileManager.default.removeItem(atPath: payloadURL.path)
+                    try? fileManagerProvider.removeItem(atPath: payloadURL.path)
                     completion(false)
                 }
             } else {
                 self.logMessage("No HTTP response")
                 self.markNetworkError()
-                try? FileManager.default.removeItem(atPath: payloadURL.path)
+                try? fileManagerProvider.removeItem(atPath: payloadURL.path)
                 completion(false)
             }
         }
@@ -219,7 +219,7 @@ extension OWHSyncEngine {
                 }
             }
 
-            try? FileManager.default.removeItem(atPath: anchorPath)
+            try? fileManagerProvider.removeItem(atPath: anchorPath)
         }
 
         if wasFullExport {
@@ -229,15 +229,15 @@ extension OWHSyncEngine {
             logMessage("Marked full export complete")
         }
 
-        try? FileManager.default.removeItem(atPath: itemPath)
+        try? fileManagerProvider.removeItem(atPath: itemPath)
     }
 
     // MARK: - Clear outbox
     public func clearOutbox() {
         let dir = outboxDir()
-        if let files = try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil) {
+        if let files = try? fileManagerProvider.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil) {
             for file in files {
-                try? FileManager.default.removeItem(at: file)
+                try? fileManagerProvider.removeItem(at: file)
             }
         }
         logMessage("Cleared outbox")
@@ -247,21 +247,21 @@ extension OWHSyncEngine {
     public func retryOutboxIfPossible() {
         guard let endpoint = self.syncEndpoint, let token = self.accessToken else { return }
         let dir = outboxDir()
-        guard let files = try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil) else { return }
+        guard let files = try? fileManagerProvider.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil) else { return }
 
         let regularItems = files.filter { $0.lastPathComponent.hasPrefix("item_") && $0.pathExtension == "json" && !$0.lastPathComponent.hasPrefix("combined_item_") }
         let combinedItems = files.filter { $0.lastPathComponent.hasPrefix("combined_item_") && $0.pathExtension == "json" }
 
         for itemURL in regularItems {
-            if let attrs = try? FileManager.default.attributesOfItem(atPath: itemURL.path),
+            if let attrs = try? fileManagerProvider.attributesOfItem(atPath: itemURL.path),
                let mdate = attrs[.modificationDate] as? Date,
-               Date().timeIntervalSince(mdate) < 30 {
+               dateProvider.now().timeIntervalSince(mdate) < 30 {
                 continue
             }
             guard let data = try? Data(contentsOf: itemURL),
                   let item = try? JSONDecoder().decode(OutboxItem.self, from: data) else { continue }
             let payloadURL = URL(fileURLWithPath: item.payloadPath)
-            guard FileManager.default.fileExists(atPath: payloadURL.path),
+            guard fileManagerProvider.fileExists(atPath: payloadURL.path),
                   let payloadData = try? Data(contentsOf: payloadURL) else { continue }
 
             var req = URLRequest(url: endpoint)
@@ -271,25 +271,25 @@ extension OWHSyncEngine {
             req.httpBody = payloadData
             req.setValue("\(payloadData.count)", forHTTPHeaderField: "Content-Length")
 
-            let task = foregroundSession.dataTask(with: req) { data, response, error in
+            let task = networkSession.foregroundDataTask(with: req) { data, response, error in
                 if let httpResponse = response as? HTTPURLResponse, (200...299).contains(httpResponse.statusCode) {
-                    try? FileManager.default.removeItem(atPath: payloadURL.path)
-                    try? FileManager.default.removeItem(atPath: itemURL.path)
+                    try? self.fileManagerProvider.removeItem(atPath: payloadURL.path)
+                    try? self.fileManagerProvider.removeItem(atPath: itemURL.path)
                 }
             }
             task.resume()
         }
 
         for itemURL in combinedItems {
-            if let attrs = try? FileManager.default.attributesOfItem(atPath: itemURL.path),
+            if let attrs = try? fileManagerProvider.attributesOfItem(atPath: itemURL.path),
                let mdate = attrs[.modificationDate] as? Date,
-               Date().timeIntervalSince(mdate) < 30 {
+               dateProvider.now().timeIntervalSince(mdate) < 30 {
                 continue
             }
             guard let itemData = try? Data(contentsOf: itemURL),
                   let item = try? JSONDecoder().decode(OutboxItem.self, from: itemData) else { continue }
             let payloadURL = URL(fileURLWithPath: item.payloadPath)
-            guard FileManager.default.fileExists(atPath: payloadURL.path),
+            guard fileManagerProvider.fileExists(atPath: payloadURL.path),
                   let payloadData = try? Data(contentsOf: payloadURL) else { continue }
 
             var req = URLRequest(url: endpoint)
@@ -299,10 +299,10 @@ extension OWHSyncEngine {
             req.httpBody = payloadData
             req.setValue("\(payloadData.count)", forHTTPHeaderField: "Content-Length")
 
-            let task = foregroundSession.dataTask(with: req) { [weak self] data, response, error in
+            let task = networkSession.foregroundDataTask(with: req) { [weak self] data, response, error in
                 if let httpResponse = response as? HTTPURLResponse, (200...299).contains(httpResponse.statusCode) {
                     self?.handleSuccessfulUpload(itemPath: itemURL.path, anchorPath: item.anchorPath, wasFullExport: item.wasFullExport ?? false)
-                    try? FileManager.default.removeItem(atPath: payloadURL.path)
+                    try? self?.fileManagerProvider.removeItem(atPath: payloadURL.path)
                 }
             }
             task.resume()

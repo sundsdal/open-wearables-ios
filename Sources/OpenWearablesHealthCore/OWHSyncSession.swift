@@ -30,12 +30,12 @@ extension OWHSyncEngine {
     // MARK: - Sync State File
 
     internal func syncStateDir() -> URL {
-        let base = try? FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
-        return (base ?? FileManager.default.temporaryDirectory).appendingPathComponent("health_sync_state", isDirectory: true)
+        let base = try? fileManagerProvider.applicationSupportURL()
+        return (base ?? fileManagerProvider.temporaryDirectory).appendingPathComponent("health_sync_state", isDirectory: true)
     }
 
     internal func ensureSyncStateDir() {
-        try? FileManager.default.createDirectory(at: syncStateDir(), withIntermediateDirectories: true)
+        try? fileManagerProvider.createDirectory(at: syncStateDir(), withIntermediateDirectories: true)
     }
 
     internal func syncStateFilePath() -> URL {
@@ -106,8 +106,8 @@ extension OWHSyncEngine {
     }
 
     public func clearSyncSession() {
-        try? FileManager.default.removeItem(at: syncStateFilePath())
-        try? FileManager.default.removeItem(at: anchorsFilePath())
+        try? fileManagerProvider.removeItem(at: syncStateFilePath())
+        try? fileManagerProvider.removeItem(at: anchorsFilePath())
         logMessage("Cleared sync state")
     }
 
@@ -117,7 +117,7 @@ extension OWHSyncEngine {
         let state = OWHSyncState(
             userKey: userKey(),
             fullExport: fullExport,
-            createdAt: Date(),
+            createdAt: dateProvider.now(),
             typeProgress: [:],
             totalSentCount: 0,
             completedTypes: [],
