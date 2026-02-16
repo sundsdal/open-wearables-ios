@@ -47,7 +47,7 @@ extension OWHSyncEngine {
 
     // MARK: - Initial sync
     internal func initialSyncKickoff(completion: @escaping (Bool) -> Void) {
-        guard HKHealthStore.isHealthDataAvailable() else {
+        guard healthStoreProvider.isHealthDataAvailable() else {
             logMessage("HealthKit not available")
             completion(false)
             return

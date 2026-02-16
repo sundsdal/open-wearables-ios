@@ -15,14 +15,17 @@ public final class OWHSyncEngine: NSObject, URLSessionDelegate, URLSessionTaskDe
     internal var baseUrl: String?
     internal var customSyncUrl: String?
 
-    // MARK: - User State (loaded from Keychain)
-    internal var userId: String? { OWHKeychain.getUserId() }
-    internal var accessToken: String? { OWHKeychain.getAccessToken() }
+    // MARK: - Dependencies
+    internal var healthStoreProvider: OWHHealthStoreProviding!
+    internal var networkSession: OWHNetworkSessionProviding!
+    internal var keychainProvider: OWHKeychainProviding!
+    internal var backgroundTaskProvider: OWHBackgroundTaskProviding!
+    internal var fileManagerProvider: OWHFileManaging!
+    internal var dateProvider: OWHDateProviding!
 
-    // MARK: - HealthKit State
-    internal let healthStore = HKHealthStore()
-    internal var session: URLSession!
-    internal var foregroundSession: URLSession!
+    // MARK: - User State (loaded from Keychain)
+    internal var userId: String? { keychainProvider.getUserId() }
+    internal var accessToken: String? { keychainProvider.getAccessToken() }
     internal var trackedTypes: [HKSampleType] = []
     internal var chunkSize: Int = 1000
     internal var backgroundChunkSize: Int = 100
@@ -79,45 +82,58 @@ public final class OWHSyncEngine: NSObject, URLSessionDelegate, URLSessionTaskDe
     }
 
     // MARK: - Init
-    override init() {
+
+    private override init() {
         super.init()
-
-        let bgCfg = URLSessionConfiguration.background(withIdentifier: bgSessionId)
-        bgCfg.isDiscretionary = false
-        bgCfg.waitsForConnectivity = true
-        self.session = URLSession(configuration: bgCfg, delegate: self, delegateQueue: nil)
-
-        let fgCfg = URLSessionConfiguration.default
-        fgCfg.timeoutIntervalForRequest = 120
-        fgCfg.timeoutIntervalForResource = 600
-        fgCfg.waitsForConnectivity = false
-        self.foregroundSession = URLSession(configuration: fgCfg, delegate: nil, delegateQueue: OperationQueue.main)
+        self.healthStoreProvider = HKHealthStore()
+        self.keychainProvider = OWHKeychainAdapter()
+        self.backgroundTaskProvider = OWHDefaultBackgroundTaskProvider()
+        self.fileManagerProvider = FileManager.default
+        self.dateProvider = OWHSystemDateProvider()
+        self.networkSession = OWHDefaultNetworkSession(bgSessionId: bgSessionId, delegate: self)
 
         if #available(iOS 13.0, *) {
-            BGTaskScheduler.shared.register(forTaskWithIdentifier: refreshTaskId, using: nil) { [weak self] task in
+            backgroundTaskProvider.registerBGTask(forTaskWithIdentifier: refreshTaskId, using: nil) { [weak self] task in
                 self?.handleAppRefresh(task: task as! BGAppRefreshTask)
             }
-            BGTaskScheduler.shared.register(forTaskWithIdentifier: processTaskId, using: nil) { [weak self] task in
+            backgroundTaskProvider.registerBGTask(forTaskWithIdentifier: processTaskId, using: nil) { [weak self] task in
                 self?.handleProcessing(task: task as! BGProcessingTask)
             }
         }
     }
 
+    internal init(
+        healthStore: OWHHealthStoreProviding,
+        networkSession: OWHNetworkSessionProviding,
+        keychain: OWHKeychainProviding,
+        backgroundTasks: OWHBackgroundTaskProviding,
+        fileManager: OWHFileManaging,
+        dateProvider: OWHDateProviding
+    ) {
+        super.init()
+        self.healthStoreProvider = healthStore
+        self.networkSession = networkSession
+        self.keychainProvider = keychain
+        self.backgroundTaskProvider = backgroundTasks
+        self.fileManagerProvider = fileManager
+        self.dateProvider = dateProvider
+    }
+
     // MARK: - Public API: Configure
 
     public func configure(baseUrl: String, customSyncUrl: String? = nil) {
-        OWHKeychain.clearKeychainIfReinstalled()
+        keychainProvider.clearKeychainIfReinstalled()
 
         self.baseUrl = baseUrl
 
         if let providedCustomUrl = customSyncUrl {
             self.customSyncUrl = providedCustomUrl
-            OWHKeychain.saveCustomSyncUrl(providedCustomUrl)
-        } else if let storedCustomUrl = OWHKeychain.getCustomSyncUrl() {
+            keychainProvider.saveCustomSyncUrl(providedCustomUrl)
+        } else if let storedCustomUrl = keychainProvider.getCustomSyncUrl() {
             self.customSyncUrl = storedCustomUrl
         }
 
-        if let storedTypes = OWHKeychain.getTrackedTypes() {
+        if let storedTypes = keychainProvider.getTrackedTypes() {
             self.trackedTypes = mapTypes(storedTypes)
             logMessage("Restored \(trackedTypes.count) tracked types")
         }
@@ -128,7 +144,7 @@ public final class OWHSyncEngine: NSObject, URLSessionDelegate, URLSessionTaskDe
             logMessage("Configured: baseUrl=\(baseUrl)")
         }
 
-        if OWHKeychain.isSyncActive() && OWHKeychain.hasSession() && !trackedTypes.isEmpty {
+        if keychainProvider.isSyncActive() && keychainProvider.hasSession() && !trackedTypes.isEmpty {
             logMessage("Auto-restoring background sync...")
             DispatchQueue.main.async { [weak self] in
                 self?.autoRestoreSync()
@@ -138,14 +154,14 @@ public final class OWHSyncEngine: NSObject, URLSessionDelegate, URLSessionTaskDe
 
     /// Call this from AppDelegate didFinishLaunchingWithOptions to restore background delivery
     @objc public func restoreOnLaunch() {
-        if OWHKeychain.isSyncActive() && OWHKeychain.hasSession() {
-            if let storedTypes = OWHKeychain.getTrackedTypes() {
+        if keychainProvider.isSyncActive() && keychainProvider.hasSession() {
+            if let storedTypes = keychainProvider.getTrackedTypes() {
                 self.trackedTypes = mapTypes(storedTypes)
             }
-            if let storedCustomUrl = OWHKeychain.getCustomSyncUrl() {
+            if let storedCustomUrl = keychainProvider.getCustomSyncUrl() {
                 self.customSyncUrl = storedCustomUrl
             }
-            if let baseUrl = OWHKeychain.getBaseUrl() {
+            if let baseUrl = keychainProvider.getBaseUrl() {
                 self.baseUrl = baseUrl
             }
         }
@@ -183,15 +199,15 @@ public final class OWHSyncEngine: NSObject, URLSessionDelegate, URLSessionTaskDe
     // MARK: - Public API: Sign In
 
     public func signIn(userId: String, accessToken: String, appId: String? = nil, appSecret: String? = nil, baseUrl: String? = nil) {
-        OWHKeychain.saveCredentials(userId: userId, accessToken: accessToken)
+        keychainProvider.saveCredentials(userId: userId, accessToken: accessToken)
 
         if let appId = appId, let appSecret = appSecret, let baseUrl = baseUrl {
-            OWHKeychain.saveAppCredentials(appId: appId, appSecret: appSecret, baseUrl: baseUrl)
+            keychainProvider.saveAppCredentials(appId: appId, appSecret: appSecret, baseUrl: baseUrl)
             logMessage("App credentials saved for refresh")
         }
 
-        let expiresAt = Date().addingTimeInterval(60 * 60)
-        OWHKeychain.saveTokenExpiry(expiresAt)
+        let expiresAt = dateProvider.now().addingTimeInterval(60 * 60)
+        keychainProvider.saveTokenExpiry(expiresAt)
 
         logMessage("Signed in: userId=\(userId)")
 
@@ -211,7 +227,7 @@ public final class OWHSyncEngine: NSObject, URLSessionDelegate, URLSessionTaskDe
         clearSyncSession()
         clearOutbox()
 
-        OWHKeychain.clearAll()
+        keychainProvider.clearAll()
 
         logMessage("Sign out complete - all sync state reset")
     }
@@ -219,8 +235,8 @@ public final class OWHSyncEngine: NSObject, URLSessionDelegate, URLSessionTaskDe
     // MARK: - Public API: Restore Session
 
     public func restoreSession() -> String? {
-        if OWHKeychain.hasSession(),
-           let userId = OWHKeychain.getUserId() {
+        if keychainProvider.hasSession(),
+           let userId = keychainProvider.getUserId() {
             logMessage("Session restored: userId=\(userId)")
             return userId
         }
@@ -230,19 +246,19 @@ public final class OWHSyncEngine: NSObject, URLSessionDelegate, URLSessionTaskDe
     // MARK: - Public API: Session Status
 
     public func isSessionValid() -> Bool {
-        return OWHKeychain.hasSession()
+        return keychainProvider.hasSession()
     }
 
     public func isSyncActive() -> Bool {
-        return OWHKeychain.isSyncActive()
+        return keychainProvider.isSyncActive()
     }
 
     public func getStoredCredentials() -> [String: Any?] {
         return [
-            "userId": OWHKeychain.getUserId(),
-            "accessToken": OWHKeychain.getAccessToken(),
-            "customSyncUrl": OWHKeychain.getCustomSyncUrl(),
-            "isSyncActive": OWHKeychain.isSyncActive()
+            "userId": keychainProvider.getUserId(),
+            "accessToken": keychainProvider.getAccessToken(),
+            "customSyncUrl": keychainProvider.getCustomSyncUrl(),
+            "isSyncActive": keychainProvider.isSyncActive()
         ]
     }
 
@@ -250,7 +266,7 @@ public final class OWHSyncEngine: NSObject, URLSessionDelegate, URLSessionTaskDe
 
     public func requestAuthorization(types: [String], completion: @escaping (Bool) -> Void) {
         self.trackedTypes = mapTypes(types)
-        OWHKeychain.saveTrackedTypes(types)
+        keychainProvider.saveTrackedTypes(types)
 
         logMessage("Requesting auth for \(trackedTypes.count) types")
 
@@ -287,13 +303,13 @@ public final class OWHSyncEngine: NSObject, URLSessionDelegate, URLSessionTaskDe
         self.scheduleAppRefresh()
         self.scheduleProcessing()
 
-        let canStart = HKHealthStore.isHealthDataAvailable() &&
+        let canStart = healthStoreProvider.isHealthDataAvailable() &&
                       self.syncEndpoint != nil &&
                       self.accessToken != nil &&
                       !self.trackedTypes.isEmpty
 
         if canStart {
-            OWHKeychain.setSyncActive(true)
+            keychainProvider.setSyncActive(true)
         }
 
         return canStart
@@ -305,7 +321,7 @@ public final class OWHSyncEngine: NSObject, URLSessionDelegate, URLSessionTaskDe
         self.stopBackgroundDelivery()
         self.stopNetworkMonitoring()
         self.cancelAllBGTasks()
-        OWHKeychain.setSyncActive(false)
+        keychainProvider.setSyncActive(false)
     }
 
     // MARK: - Public API: Reset Anchors
@@ -316,7 +332,7 @@ public final class OWHSyncEngine: NSObject, URLSessionDelegate, URLSessionTaskDe
         self.clearOutbox()
         logMessage("Anchors reset - will perform full sync on next sync")
 
-        if OWHKeychain.isSyncActive() && self.accessToken != nil {
+        if keychainProvider.isSyncActive() && self.accessToken != nil {
             logMessage("Triggering full export after reset...")
             self.syncAll(fullExport: true) {
                 self.logMessage("Full export after reset completed")
@@ -361,18 +377,18 @@ public final class OWHSyncEngine: NSObject, URLSessionDelegate, URLSessionTaskDe
 
     // MARK: - Token Refresh
     internal func refreshTokenIfNeeded(completion: @escaping (Bool) -> Void) {
-        guard OWHKeychain.isTokenExpired() else {
+        guard keychainProvider.isTokenExpired() else {
             completion(true)
             return
         }
 
         logMessage("Token expired, refreshing...")
 
-        guard OWHKeychain.hasRefreshCredentials(),
-              let appId = OWHKeychain.getAppId(),
-              let appSecret = OWHKeychain.getAppSecret(),
-              let baseUrl = OWHKeychain.getBaseUrl(),
-              let userId = OWHKeychain.getUserId() else {
+        guard keychainProvider.hasRefreshCredentials(),
+              let appId = keychainProvider.getAppId(),
+              let appSecret = keychainProvider.getAppSecret(),
+              let baseUrl = keychainProvider.getBaseUrl(),
+              let userId = keychainProvider.getUserId() else {
             logMessage("Missing credentials for token refresh")
             completion(false)
             return
@@ -392,7 +408,7 @@ public final class OWHSyncEngine: NSObject, URLSessionDelegate, URLSessionTaskDe
         let body: [String: Any] = ["app_id": appId, "app_secret": appSecret]
         request.httpBody = try? JSONSerialization.data(withJSONObject: body)
 
-        let task = foregroundSession.dataTask(with: request) { [weak self] data, response, error in
+        let task = networkSession.foregroundDataTask(with: request) { [weak self] data, response, error in
             guard let self = self else { completion(false); return }
 
             if let error = error {
@@ -412,10 +428,10 @@ public final class OWHSyncEngine: NSObject, URLSessionDelegate, URLSessionTaskDe
             }
 
             let fullToken = newToken.hasPrefix("Bearer ") ? newToken : "Bearer \(newToken)"
-            OWHKeychain.saveCredentials(userId: userId, accessToken: fullToken)
+            keychainProvider.saveCredentials(userId: userId, accessToken: fullToken)
 
-            let expiresAt = Date().addingTimeInterval(60 * 60)
-            OWHKeychain.saveTokenExpiry(expiresAt)
+            let expiresAt = self.dateProvider.now().addingTimeInterval(60 * 60)
+            keychainProvider.saveTokenExpiry(expiresAt)
 
             self.logMessage("Token refreshed successfully")
             completion(true)
@@ -425,7 +441,7 @@ public final class OWHSyncEngine: NSObject, URLSessionDelegate, URLSessionTaskDe
 
     // MARK: - Authorization
     internal func requestHealthKitAuthorization(completion: @escaping (Bool) -> Void) {
-        guard HKHealthStore.isHealthDataAvailable() else {
+        guard healthStoreProvider.isHealthDataAvailable() else {
             DispatchQueue.main.async { completion(false) }
             return
         }
@@ -434,7 +450,7 @@ public final class OWHSyncEngine: NSObject, URLSessionDelegate, URLSessionTaskDe
 
         logMessage("Requesting read-only auth for \(readTypes.count) types")
 
-        healthStore.requestAuthorization(toShare: nil, read: readTypes) { ok, _ in
+        healthStoreProvider.requestAuthorization(toShare: nil, read: readTypes) { ok, _ in
             DispatchQueue.main.async { completion(ok) }
         }
     }
@@ -469,9 +485,9 @@ public final class OWHSyncEngine: NSObject, URLSessionDelegate, URLSessionTaskDe
         }
 
         if observerBgTask == .invalid {
-            observerBgTask = UIApplication.shared.beginBackgroundTask(withName: "health_combined_sync") {
+            observerBgTask = backgroundTaskProvider.beginBackgroundTask(withName: "health_combined_sync") {
                 self.logMessage("Background task expired")
-                UIApplication.shared.endBackgroundTask(self.observerBgTask)
+                self.backgroundTaskProvider.endBackgroundTask(self.observerBgTask)
                 self.observerBgTask = .invalid
             }
         }
@@ -482,7 +498,7 @@ public final class OWHSyncEngine: NSObject, URLSessionDelegate, URLSessionTaskDe
             guard let self = self else { return }
             self.syncAll(fullExport: false) {
                 if self.observerBgTask != .invalid {
-                    UIApplication.shared.endBackgroundTask(self.observerBgTask)
+                    self.backgroundTaskProvider.endBackgroundTask(self.observerBgTask)
                     self.observerBgTask = .invalid
                 }
             }
@@ -508,7 +524,7 @@ public final class OWHSyncEngine: NSObject, URLSessionDelegate, URLSessionTaskDe
         isSyncing = true
         syncLock.unlock()
 
-        guard HKHealthStore.isHealthDataAvailable() else {
+        guard healthStoreProvider.isHealthDataAvailable() else {
             logMessage("HealthKit not available")
             finishSync()
             completion()
@@ -699,7 +715,7 @@ public final class OWHSyncEngine: NSObject, URLSessionDelegate, URLSessionTaskDe
             }
         }
 
-        healthStore.execute(query)
+        healthStoreProvider.execute(query)
     }
 
     private func processTypeStreamingContinue(
@@ -778,7 +794,7 @@ public final class OWHSyncEngine: NSObject, URLSessionDelegate, URLSessionTaskDe
             }
         }
 
-        healthStore.execute(query)
+        healthStoreProvider.execute(query)
     }
 
     private func sendChunkStreaming(
@@ -848,7 +864,7 @@ public final class OWHSyncEngine: NSObject, URLSessionDelegate, URLSessionTaskDe
                 }
             }
         }
-        healthStore.execute(query)
+        healthStoreProvider.execute(query)
     }
 
     // MARK: - Logging

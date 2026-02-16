@@ -7,7 +7,7 @@ extension OWHSyncEngine {
 
     // MARK: - Background delivery
     internal func startBackgroundDelivery() {
-        for q in activeObserverQueries { healthStore.stop(q) }
+        for q in activeObserverQueries { healthStoreProvider.stop(q) }
         activeObserverQueries.removeAll()
 
         let observableTypes = getQueryableTypes()
@@ -28,21 +28,21 @@ extension OWHSyncEngine {
                 self.triggerCombinedSync()
                 completionHandler()
             }
-            healthStore.execute(observer)
+            healthStoreProvider.execute(observer)
             activeObserverQueries.append(observer)
-            healthStore.enableBackgroundDelivery(for: type, frequency: .immediate) { _, _ in }
+            healthStoreProvider.enableBackgroundDelivery(for: type, frequency: .immediate) { _, _ in }
         }
         logMessage("Background observers registered for \(observableTypes.count) types")
     }
 
     internal func stopBackgroundDelivery() {
-        for q in activeObserverQueries { healthStore.stop(q) }
+        for q in activeObserverQueries { healthStoreProvider.stop(q) }
         activeObserverQueries.removeAll()
 
         let observableTypes = getQueryableTypes()
 
         for t in observableTypes {
-            healthStore.disableBackgroundDelivery(for: t) { _, _ in }
+            healthStoreProvider.disableBackgroundDelivery(for: t) { _, _ in }
         }
         logMessage("Background observers stopped")
     }
@@ -51,9 +51,9 @@ extension OWHSyncEngine {
     internal func scheduleAppRefresh() {
         guard #available(iOS 13.0, *) else { return }
         let req = BGAppRefreshTaskRequest(identifier: refreshTaskId)
-        req.earliestBeginDate = Date(timeIntervalSinceNow: 15 * 60)
+        req.earliestBeginDate = dateProvider.now().addingTimeInterval(15 * 60)
         do {
-            try BGTaskScheduler.shared.submit(req)
+            try backgroundTaskProvider.submitBGTask(req)
             logMessage("Scheduled app refresh task")
         }
         catch {
@@ -67,7 +67,7 @@ extension OWHSyncEngine {
         req.requiresNetworkConnectivity = true
         req.requiresExternalPower = false
         do {
-            try BGTaskScheduler.shared.submit(req)
+            try backgroundTaskProvider.submitBGTask(req)
             logMessage("Scheduled processing task")
         }
         catch {
@@ -77,7 +77,7 @@ extension OWHSyncEngine {
 
     internal func cancelAllBGTasks() {
         if #available(iOS 13.0, *) {
-            BGTaskScheduler.shared.cancelAllTaskRequests()
+            backgroundTaskProvider.cancelAllBGTaskRequests()
             logMessage("Cancelled all background tasks")
         }
     }

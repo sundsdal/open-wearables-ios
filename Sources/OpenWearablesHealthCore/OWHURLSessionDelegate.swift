@@ -11,8 +11,8 @@ extension OWHSyncEngine {
         let anchorPath = parts.count > 2 ? parts[2] : ""
 
         defer {
-            if !payloadPath.isEmpty { try? FileManager.default.removeItem(atPath: payloadPath) }
-            if error == nil, !itemPath.isEmpty { try? FileManager.default.removeItem(atPath: itemPath) }
+            if !payloadPath.isEmpty { try? fileManagerProvider.removeItem(atPath: payloadPath) }
+            if error == nil, !itemPath.isEmpty { try? fileManagerProvider.removeItem(atPath: itemPath) }
         }
 
         if let error = error {
@@ -53,7 +53,6 @@ extension OWHSyncEngine {
 
                 if item.wasFullExport == true {
                     let fullDoneKey = "fullDone.\(item.userKey)"
-                    let defaults = UserDefaults(suiteName: "com.openwearables.healthsdk.state") ?? .standard
                     defaults.set(true, forKey: fullDoneKey)
                     defaults.synchronize()
                 }
@@ -64,7 +63,7 @@ extension OWHSyncEngine {
                 }
             }
             if !anchorPath.isEmpty {
-                try? FileManager.default.removeItem(atPath: anchorPath)
+                try? fileManagerProvider.removeItem(atPath: anchorPath)
             }
         }
     }
